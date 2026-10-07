@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#1c5bc9">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Snow Tracker">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
 <script>
 /* Netlify data adapter: gives the page the same small db interface it used inside Claude,
@@ -224,6 +231,10 @@ td .sub{display:block;font-size:12px;color:var(--muted)}
   .evselect{min-width:0;width:100%}
   .eventbar .field.grow{flex:1 1 100%}
 }
+.ios-tip{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:15;display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:10px;background:var(--surface);color:var(--ink);border:2px solid var(--edge);box-shadow:0 6px 24px rgba(10,30,60,.18);font-size:14px}
+.ios-tip span{flex:1;min-width:0}
+.ios-tip svg{vertical-align:-3px;color:var(--accent)}
+.ios-tip button{border:0;background:none;font-size:22px;width:40px;height:40px;color:var(--muted)}
 /* crew */
 .crew{margin:12px 16px 0;padding:10px 12px;border:1px solid var(--edge);border-radius:8px}
 .crew-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -276,6 +287,7 @@ td .sub{display:block;font-size:12px;color:var(--muted)}
       <button id="tab-crew" role="tab" aria-selected="false" data-action="tab" data-tab="crew">Crew</button>
       <button id="tab-season" role="tab" aria-selected="false" data-action="tab" data-tab="season">Season</button>
     </div>
+    <button class="btn primary" id="btn-install" hidden>Install app</button>
     <span class="live" id="live"><i></i><span>Connecting</span></span>
   </div>
 </header>
@@ -284,6 +296,24 @@ td .sub{display:block;font-size:12px;color:var(--muted)}
   <div class="empty" style="margin-top:28px"><h2>Loading decks</h2><p>Connecting to the live event board.</p></div>
 </main>
 <div class="toast" id="toast" hidden></div>
+<div class="ios-tip" id="ios-tip" hidden>
+  <span>Install on your iPhone: tap <strong>Share</strong> <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 2v11M6 6l4-4 4 4M4 10v7h12v-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg> then <strong>Add to Home Screen</strong>.</span>
+  <button id="ios-tip-x" aria-label="Dismiss">×</button>
+</div>
+<script>
+(function(){
+  if("serviceWorker" in navigator) window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js").catch(()=>{}));
+  const standalone=window.matchMedia("(display-mode: standalone)").matches||navigator.standalone===true;
+  let deferred=null;const btn=document.getElementById("btn-install");
+  window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferred=e;if(!standalone)btn.hidden=false});
+  btn.addEventListener("click",async()=>{if(!deferred)return;deferred.prompt();try{await deferred.userChoice}catch(e){}deferred=null;btn.hidden=true});
+  window.addEventListener("appinstalled",()=>{btn.hidden=true});
+  const ios=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+  let dismissed=false;try{dismissed=localStorage.getItem("iosTipDismissed")==="1"}catch(e){}
+  if(ios&&!standalone&&!dismissed){const t=document.getElementById("ios-tip");t.hidden=false;
+    document.getElementById("ios-tip-x").addEventListener("click",()=>{t.hidden=true;try{localStorage.setItem("iosTipDismissed","1")}catch(e){}})}
+})();
+</script>
 
 <script>
 (function(){
