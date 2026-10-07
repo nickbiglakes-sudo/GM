@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1c5bc9">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script>
+/* Netlify data adapter: gives the page the same small db interface it used inside Claude,
+   backed by /api (Netlify Function + Blobs). Polls every few seconds so every open phone stays live. */
+(function(){
+  const POLL_MS=4000;
+  let docs={},inFlight=0,pollTimer=null,lastJson="";
+  const listeners=new Set();
+  const clone=o=>JSON.parse(JSON.stringify(o));
+  function deepMerge(t,p){for(const k in p){const v=p[k];if(v&&typeof v==="object"&&!Array.isArray(v)){if(!t[k]||typeof t[k]!=="object"||Array.isArray(t[k]))t[k]={};deepMerge(t[k],v)}else t[k]=v}return t}
+  function emit(){listeners.forEach(fn=>{try{fn()}catch(e){console.error(e)}})}
+  async function fetchState(){
+    const r=await fetch("/api/state",{cache:"no-store"});
+    if(!r.ok)throw {code:"unavailable",message:"HTTP "+r.status};
+    return (await r.json()).docs||{};
+  }
+  async function poll(){
+    clearTimeout(pollTimer);
+    try{
+      if(inFlight===0){
+        const d=await fetchState();
+        const j=JSON.stringify(d);
+        if(inFlight===0&&j!==lastJson){lastJson=j;docs=d;emit()}
+      }
+    }catch(e){}
+    pollTimer=setTimeout(poll,document.hidden?POLL_MS*4:POLL_MS);
+  }
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll()});
+  async function send(op,path,data){
+    inFlight++;
+    try{
+      const r=await fetch("/api/doc",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({op,path,data})});
+      if(!r.ok){let b={};try{b=await r.json()}catch(e){}throw {code:b.code||"unavailable",message:b.message||("HTTP "+r.status)}}
+    }finally{inFlight--;if(inFlight===0){lastJson="";setTimeout(poll,150)}}
+  }
+  function snapDoc(path){const d=docs[path];return{id:path.split("/").pop(),exists:!!d,data:()=>d?clone(d):undefined,metadata:{fromCache:false,hasPendingWrites:inFlight>0}}}
+  function docRef(path){
+    return{
+      id:path.split("/").pop(),path,
+      get:async()=>snapDoc(path),
+      set:async data=>{docs[path]=clone(data);emit();await send("set",path,data)},
+      update:async data=>{if(docs[path])deepMerge(docs[path],clone(data));emit();await send("update",path,data)},
+      delete:async()=>{delete docs[path];emit();await send("delete",path)},
+      onSnapshot(next){const fn=()=>next(snapDoc(path));listeners.add(fn);fn();return()=>listeners.delete(fn)}
+    };
+  }
+  function collRef(name){
+    const q={
+      limit:()=>q,orderBy:()=>q,where:()=>q,
+      doc:id=>docRef(name+"/"+(id||(Date.now().toString(36)+Math.random().toString(36).slice(2,8)))),
+      onSnapshot(next){
+        const fn=()=>{const ds=Object.keys(docs).filter(k=>k.startsWith(name+"/")).map(snapDoc);next({docs:ds,size:ds.length,empty:!ds.length,docChanges:()=>[],metadata:{fromCache:false,hasPendingWrites:inFlight>0}})};
+        listeners.add(fn);fn();return()=>listeners.delete(fn);
+      }
+    };
+    return q;
+  }
+  const db={doc:docRef,collection:collRef};
+  let ready=null;
+  window.claude={use:async name=>{
+    if(name!=="db")return null;
+    if(!ready)ready=(async()=>{try{docs=await fetchState();lastJson=JSON.stringify(docs);pollTimer=setTimeout(poll,POLL_MS);return db}catch(e){return null}})();
+    return ready;
+  }};
+})();
+</script>
+<title>GM Tech Snow Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: sticky event bar + summary strip, then a responsive grid of 5 deck cards; Season tab is a totals table. Built for a phone in a gloved hand. */
+:root{
+  --bg:#edf1f5; --surface:#ffffff; --surface-2:#f5f7fa; --ink:#132030; --muted:#5a6778; --line:#cbd8ec; --edge:#2a66d4;
+  --accent:#1c5bc9; --accent-soft:#e3ecfb; --accent-ink:#ffffff;
+  --ok:#1d7f47; --ok-soft:#e1f3e8; --warn:#9a6511; --warn-soft:#fbefd8; --bad:#b33a2c; --bad-soft:#fbe5e2;
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0d131a; --surface:#151e28; --surface-2:#1b2632; --ink:#e5ecf4; --muted:#93a1b1; --line:#263a56; --edge:#4f86e8;
+  --accent:#5b93f0; --accent-soft:#1c2c45; --accent-ink:#0b1320;
+  --ok:#47c482; --ok-soft:#14301f; --warn:#e4a944; --warn-soft:#352a12; --bad:#f0705f; --bad-soft:#3a1c18;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0d131a; --surface:#151e28; --surface-2:#1b2632; --ink:#e5ecf4; --muted:#93a1b1; --line:#263a56; --edge:#4f86e8;
+  --accent:#5b93f0; --accent-soft:#1c2c45; --accent-ink:#0b1320;
+  --ok:#47c482; --ok-soft:#14301f; --warn:#e4a944; --warn-soft:#352a12; --bad:#f0705f; --bad-soft:#3a1c18;
+  color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.45}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+button:disabled{cursor:not-allowed}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:0 48px}
+
+/* top bar */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--edge)}
+.top-in{max-width:1180px;margin:0 auto;padding:10px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px}
+.brand{display:flex;flex-direction:column;line-height:1.05;margin-right:auto}
+.brand b{font-family:var(--f-display);font-size:24px;letter-spacing:.01em;text-transform:uppercase}
+.brand span{font-size:12px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.tabs{display:flex;background:var(--surface);border:1px solid var(--edge);border-radius:999px;padding:3px}
+.tabs button{border:0;background:none;padding:6px 14px;border-radius:999px;font-weight:600;font-size:14px;color:var(--muted)}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg)}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.live i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.live.on i{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft)}
+.live.off i{background:var(--warn)}
+
+.banner{margin-top:14px;padding:10px 14px;border-radius:var(--r);background:var(--warn-soft);color:var(--ink);border:1px solid var(--edge);font-size:14px}
+
+/* event bar */
+.eventbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-top:18px}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.label{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+select,input[type=text],input[type=date],input[type=number]{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--edge);border-radius:8px;padding:9px 10px;min-height:44px;max-width:100%}
+.evselect{min-width:min(320px,100%)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 16px;border-radius:8px;border:1px solid var(--edge);background:var(--surface);font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.danger{color:var(--bad)}
+.btn.danger.armed{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn:disabled{opacity:.5}
+.spacer{flex:1}
+
+.newform{margin-top:14px;background:var(--surface);border:2px solid var(--edge);border-radius:var(--r);padding:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.newform .field{flex:1 1 180px}
+
+/* summary strip */
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:2px solid var(--edge);border-radius:var(--r);overflow:hidden;margin-top:16px}
+.stat{background:var(--surface);padding:12px 14px;min-width:0}
+.stat .v{font-family:var(--f-display);font-size:32px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.stat .v small{font-family:var(--f-body);font-size:13px;font-weight:600;color:var(--muted);margin-left:4px}
+.stat .k{font-size:12px;color:var(--muted);font-weight:600;margin-top:4px}
+.evmeta{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:12px;color:var(--muted);font-size:14px}
+.evmeta strong{color:var(--ink)}
+
+/* pills */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pill.done{background:var(--ok-soft);color:var(--ok)}
+.pill.prog{background:var(--warn-soft);color:var(--warn)}
+.pill.none{background:var(--surface-2);color:var(--muted)}
+.pill.closed{background:var(--surface-2);color:var(--ink)}
+
+/* deck grid */
+.decks{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;margin-top:18px}
+@media (max-width:420px){.decks{grid-template-columns:minmax(0,1fr)}}
+.deck{background:var(--surface);border:2px solid var(--edge);border-radius:var(--r);display:flex;flex-direction:column;min-width:0}
+.deck.is-done{border-color:var(--ok)}
+.deck-h{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px 10px}
+.deck-h h2{margin:0;font-family:var(--f-display);font-size:24px;font-weight:700;text-transform:uppercase;letter-spacing:.01em;text-wrap:balance}
+
+.sacks{margin:0 16px;padding:12px;border-radius:8px;background:var(--surface-2);display:flex;flex-direction:column;gap:10px}
+.sk-top{display:flex;align-items:center;gap:12px}
+.sk-top .lbl{flex:1;min-width:0}
+.sk-top .u{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.sk-top .lbs{font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:2px}
+.sk-in{width:112px;font-family:var(--f-display)!important;font-size:30px!important;font-weight:700;text-align:center;padding:4px 8px!important;font-variant-numeric:tabular-nums}
+.sk-btns{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.sk-btns button{min-height:48px;border-radius:8px;border:1px solid var(--accent);background:var(--surface);color:var(--accent);font-family:var(--f-display);font-size:22px;font-weight:700;line-height:1}
+.sk-btns button.minus{border-color:var(--line);color:var(--muted)}
+.sk-btns button:disabled{opacity:.45}
+.tiles{display:flex;flex-wrap:wrap;gap:4px;min-height:14px}
+.tiles span{width:14px;height:14px;border-radius:3px;background:var(--accent)}
+.tiles span.part{background:linear-gradient(to right,var(--accent) var(--p),var(--line) var(--p))}
+.tiles em{font-style:normal;font-size:12px;color:var(--muted)}
+
+.levels{display:grid;grid-template-columns:1fr;gap:14px;padding:14px 16px 4px}
+.lvl h3{margin:0 0 6px;display:flex;justify-content:space-between;align-items:baseline;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lvl h3 span{font-family:var(--f-mono);letter-spacing:0}
+.checks{display:flex;flex-direction:column;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+.chk{display:flex;align-items:center;gap:12px;width:100%;min-height:48px;padding:8px 12px;border:0;border-top:1px solid var(--line);background:var(--surface);text-align:left;font-weight:500}
+.chk:first-child{border-top:0}
+.chk .box{flex:none;width:24px;height:24px;border-radius:6px;border:2px solid var(--edge);display:grid;place-items:center;background:var(--surface)}
+.chk .box svg{width:16px;height:16px;opacity:0}
+.chk[aria-checked="true"]{background:var(--ok-soft)}
+.chk[aria-checked="true"] .box{background:var(--ok);border-color:var(--ok)}
+.chk[aria-checked="true"] .box svg{opacity:1}
+.chk .t{flex:1;min-width:0}
+.chk .by{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-left:4px}
+.gate{display:flex;align-items:center;gap:12px;min-height:52px;padding:8px 12px;border-top:1px solid var(--line);background:var(--surface)}
+.gate .t{flex:1;font-weight:500}
+.seg{display:flex;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--surface);padding:0 14px;min-height:38px;font-weight:700;font-size:13px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"].open{background:var(--ok);color:#fff}
+.seg button[aria-pressed="true"].closed{background:var(--bad);color:#fff}
+
+.notes{padding:10px 16px 0}
+.notes input{width:100%}
+.deck-f{margin-top:auto;padding:10px 16px 14px;font-size:12px;color:var(--muted)}
+
+/* season */
+.tablewrap{overflow-x:auto;margin-top:18px;background:var(--surface);border:2px solid var(--edge);border-radius:var(--r)}
+table{border-collapse:collapse;width:100%;min-width:720px;font-variant-numeric:tabular-nums}
+th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700;background:var(--surface-2)}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--surface-2)}
+tfoot td{font-weight:700;border-bottom:0;background:var(--surface-2)}
+td .sub{display:block;font-size:12px;color:var(--muted)}
+.mono{font-family:var(--f-mono);font-size:13px}
+
+.empty{margin-top:24px;background:var(--surface);border:1px dashed var(--edge);border-radius:var(--r);padding:28px 20px;text-align:center}
+.empty h2{font-family:var(--f-display);text-transform:uppercase;font-size:26px;margin:0 0 6px}
+.empty p{color:var(--muted);margin:0 auto 16px;max-width:52ch}
+
+.toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:600;font-size:14px;max-width:calc(100% - 32px);z-index:20}
+
+@media (max-width:640px){
+  .summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .eventbar .btn{flex:1 1 auto}
+  .evselect{min-width:0;width:100%}
+  .eventbar .field.grow{flex:1 1 100%}
+}
+/* crew */
+.crew{margin:12px 16px 0;padding:10px 12px;border:1px solid var(--edge);border-radius:8px}
+.crew-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.crew-h .label{margin-right:auto}
+.linkbtn{border:0;background:none;color:var(--accent);font-weight:700;font-size:14px;padding:6px 2px;min-height:36px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chip{display:inline-flex;align-items:center;padding:4px 10px;min-height:32px;border-radius:999px;background:var(--accent-soft);color:var(--ink);font-weight:600;font-size:14px}
+.chip .x{border:0;background:none;margin:-4px -6px -4px 4px;width:30px;height:30px;border-radius:50%;font-size:18px;line-height:1;color:var(--muted)}
+.chip .x:hover{background:var(--surface);color:var(--bad)}
+.as-sel{width:100%;margin-top:8px}
+.writein{margin-top:8px}
+.chips .none{color:var(--muted);font-size:14px}
+.picker{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.picker .opts{display:flex;flex-wrap:wrap;gap:8px}
+.opt{display:inline-flex;flex-direction:column;align-items:flex-start;gap:0;min-height:44px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--surface);text-align:left;font-weight:600;font-size:14px}
+.opt small{font-weight:500;font-size:11px;color:var(--muted)}
+.opt[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.opt[aria-pressed="true"] small{color:var(--accent-ink);opacity:.85}
+.addrow{display:flex;gap:8px;margin-top:10px}
+.addrow input{flex:1;min-width:0}
+.hint{font-size:13px;color:var(--muted);margin:6px 0 0}
+
+.sidewalk{margin-top:18px;background:var(--surface);border:2px solid var(--edge);border-radius:var(--r)}
+.sidewalk .deck-h h2{font-size:22px}
+.sidewalk .crew{margin-top:0}
+.sw-grid{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:0;margin:12px 16px 16px;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+.sw-grid > *{padding:6px 10px;border-top:1px solid var(--line);display:flex;align-items:center;min-height:48px}
+.sw-grid .hd{min-height:0;border-top:0;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--surface-2)}
+.sw-grid .nm{font-weight:600}
+.mini{width:44px;height:36px;border-radius:6px;border:2px solid var(--edge);background:var(--surface);display:grid;place-items:center}
+.mini svg{width:16px;height:16px;opacity:0}
+.mini[aria-checked="true"]{background:var(--ok);border-color:var(--ok)}
+.mini[aria-checked="true"] svg{opacity:1}
+.roster{margin-top:18px;background:var(--surface);border:2px solid var(--edge);border-radius:var(--r);overflow:hidden}
+.roster-row{display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--line);min-height:52px}
+.roster-row:first-child{border-top:0}
+.roster-row .who{flex:1;min-width:0;font-weight:600}
+.roster-row .where{font-size:13px;color:var(--muted);font-weight:500;display:block}
+.sec-h{font-family:var(--f-display);font-size:22px;text-transform:uppercase;margin:24px 0 0}
+@media (prefers-reduced-motion:no-preference){.chk,.seg button,.btn{transition:background-color .15s,border-color .15s}}
+</style>
+
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><b>GM Tech Snow Tracker</b><span>GM Tech Center · Parking Decks</span></div>
+    <div class="tabs" role="tablist">
+      <button id="tab-event" role="tab" aria-selected="true" data-action="tab" data-tab="event">Event</button>
+      <button id="tab-crew" role="tab" aria-selected="false" data-action="tab" data-tab="crew">Crew</button>
+      <button id="tab-season" role="tab" aria-selected="false" data-action="tab" data-tab="season">Season</button>
+    </div>
+    <span class="live" id="live"><i></i><span>Connecting</span></span>
+  </div>
+</header>
+
+<main class="wrap" id="app">
+  <div class="empty" style="margin-top:28px"><h2>Loading decks</h2><p>Connecting to the live event board.</p></div>
+</main>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function(){
+const DECKS=[
+  {id:"north-cole",name:"North Cole Deck"},
+  {id:"south-cole",name:"South Cole Deck"},
+  {id:"design",name:"Design Deck"},
+  {id:"d7000",name:"7000 Deck"},
+  {id:"sloan",name:"Sloan Deck"}
+];
+const SACK_LBS=2200;
+const TASKS=[["plowed","Plowed"],["applied","Material applied"],["doors","Doors & shovel areas"]];
+const CHECK_SVG='<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+const S={mode:"loading",events:[],sel:null,tab:"event",canWrite:true,me:null,names:{},showNew:false,armDelete:false,roster:[],picker:null};
+let db=null,user=null,chain=Promise.resolve(),rosterChain=Promise.resolve(),armTimer=null;
+const app=document.getElementById("app");
+
+function ls(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+try{const t=ls("tab");if(t==="season"||t==="crew")S.tab=t;}catch(e){}
+function isTyping(){const a=document.activeElement;return !!(a&&a.tagName==="INPUT"&&a.type!=="date")}
+
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=n=>Number(n||0).toLocaleString("en-US",{maximumFractionDigits:0});
+/* quarter-sack rounding and display (2.75 -> "2¾") */
+const q=n=>Math.max(0,Math.min(999,Math.round(Number(n||0)*4)/4));
+function sk(n){n=q(n);const w=Math.floor(n),f={0.25:"¼",0.5:"½",0.75:"¾"}[n-w]||"";return w===0&&f?f:String(w)+f}
+function today(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
+function niceDate(iso){if(!iso)return"";const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+function ago(ts){if(!ts)return"";const s=Math.round((Date.now()-ts)/1000);if(s<60)return"just now";if(s<3600)return Math.floor(s/60)+" min ago";const d=new Date(ts);return d.toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}
+function toast(msg){const t=document.getElementById("toast");t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,3200)}
+
+function deckData(ev,id){const d=(ev&&ev.decks&&ev.decks[id])||{};return{sacks:d.sacks||0,lower:d.lower||{},top:d.top||{},notes:d.notes||"",crew:Array.isArray(d.crew)?d.crew:[],updatedAt:d.updatedAt,updatedBy:d.updatedBy}}
+function sidewalkCrew(ev){return(ev&&ev.sidewalk&&Array.isArray(ev.sidewalk.crew))?ev.sidewalk.crew:[]}
+function crewOf(ev,target){return target==="sidewalk"?sidewalkCrew(ev):deckData(ev,target).crew}
+function targetName(t){return t==="sidewalk"?"Sidewalk crew":(DECKS.find(k=>k.id===t)||{}).name||""}
+/* where each person is assigned in an event */
+function assignments(ev){const m={};const add=(n,t)=>{(m[n]=m[n]||[]).push(t)};DECKS.forEach(k=>deckData(ev,k.id).crew.forEach(n=>add(n,k.id)));sidewalkCrew(ev).forEach(n=>add(n,"sidewalk"));return m}
+function shortName(t){return t==="sidewalk"?"Sidewalk":targetName(t).replace(" Deck","")}
+function deckStatus(d){
+  const req=[d.lower.plowed,d.lower.applied,d.lower.doors,d.top.plowed,d.top.applied,d.top.doors,!!d.top.gates];
+  const n=req.filter(Boolean).length;
+  if(n===req.length)return"done"; if(n>0||d.sacks>0)return"prog"; return"none";
+}
+const STATUS_LABEL={done:"Complete",prog:"In progress",none:"Not started"};
+function eventTotals(ev){let sacks=0,done=0,open=0,closed=0;DECKS.forEach(k=>{const d=deckData(ev,k.id);sacks+=d.sacks;if(deckStatus(d)==="done")done++;if(d.top.gates==="open")open++;if(d.top.gates==="closed")closed++});return{sacks,done,open,closed}}
+function current(){return S.events.find(e=>e.id===S.sel)||null}
+function locked(ev){return !S.canWrite||!ev||ev.status==="closed"}
+
+function deepMerge(t,p){for(const k in p){if(p[k]&&typeof p[k]==="object"&&!Array.isArray(p[k])){if(!t[k]||typeof t[k]!=="object")t[k]={};deepMerge(t[k],p[k])}else t[k]=p[k]}return t}
+
+function write(evId,patch){
+  const ev=S.events.find(e=>e.id===evId); if(ev) deepMerge(ev,JSON.parse(JSON.stringify(patch)));
+  render();
+  if(S.mode!=="live")return;
+  chain=chain.then(()=>db.doc("events/"+evId).update(patch)).catch(fail);
+}
+function fail(e){
+  const code=e&&e.code;
+  if(code==="invalid_argument"&&S.canWrite!==true){S.canWrite=false;render();toast("You have view-only access to this board.");return}
+  if(code==="quota_exceeded"){toast("Storage is full. Delete an old event to keep saving.");return}
+  toast("Couldn't save that change. Check your connection and try again.");
+}
+function deckPatch(deckId,inner){return{decks:{[deckId]:Object.assign(inner,{updatedAt:Date.now(),updatedBy:S.me||null})}}}
+
+/* ---------- render ---------- */
+function setLive(){
+  const el=document.getElementById("live");
+  el.className="live "+(S.mode==="live"?"on":S.mode==="local"?"off":"");
+  el.lastElementChild.textContent=S.mode==="live"?"Live":S.mode==="local"?"Preview":"Connecting";
+  document.getElementById("tab-event").setAttribute("aria-selected",S.tab==="event");
+  document.getElementById("tab-season").setAttribute("aria-selected",S.tab==="season");
+  document.getElementById("tab-crew").setAttribute("aria-selected",S.tab==="crew");
+}
+
+function render(){
+  setLive();
+  if(S.mode==="loading")return;
+  let h="";
+  if(S.mode==="local")h+='<div class="banner"><strong>Offline.</strong> The tracker can\'t reach its saved data right now, so this is sample data and changes won\'t be saved. Check your connection and reload the page.</div>';
+  if(!S.canWrite&&S.mode==="live")h+='<div class="banner">You can view this board but not change it. Ask the owner for Contributor access to check items off.</div>';
+  h+= S.tab==="season"?renderSeason():S.tab==="crew"?renderCrewTab():renderEvent();
+  const focusId=document.activeElement&&document.activeElement.id;
+  app.innerHTML=h;
+  if(focusId){const f=document.getElementById(focusId);if(f)f.focus()}
+  resolveNames();
+}
+
+function renderEventBar(ev){
+  let opts=S.events.map(e=>`<option value="${esc(e.id)}"${e.id===S.sel?" selected":""}>${esc(e.name||"Snow event")} · ${esc(niceDate(e.date))}${e.status==="closed"?" (closed)":""}</option>`).join("");
+  let h='<div class="eventbar">';
+  if(S.events.length) h+=`<div class="field grow"><label class="label" for="evsel">Snow event</label><select id="evsel" class="evselect" data-action="select">${opts}</select></div>`;
+  h+='<div class="spacer"></div>';
+  if(S.canWrite) h+=`<button class="btn primary" id="btn-new" data-action="toggle-new">${S.showNew?"Cancel":"+ New snow event"}</button>`;
+  if(ev&&S.canWrite){
+    h+=`<button class="btn" id="btn-close" data-action="close-event">${ev.status==="closed"?"Reopen event":"Close event"}</button>`;
+    h+=`<button class="btn danger${S.armDelete?" armed":""}" id="btn-del" data-action="delete-event">${S.armDelete?"Tap again to delete":"Delete"}</button>`;
+  }
+  h+='</div>';
+  if(S.showNew){
+    const n=S.events.length+1;
+    h+=`<form class="newform" id="newform" data-action="create">
+      <div class="field"><label class="label" for="nf-name">Event name</label><input type="text" id="nf-name" value="Snow event ${n}" required></div>
+      <div class="field"><label class="label" for="nf-date">Date</label><input type="date" id="nf-date" value="${today()}" required></div>
+      <div class="field"><label class="label" for="nf-snow">Snowfall (in)</label><input type="number" id="nf-snow" min="0" step="0.5" inputmode="decimal" placeholder="Optional"></div>
+      <button class="btn primary" type="submit" id="nf-go">Start event</button>
+    </form>`;
+  }
+  return h;
+}
+
+function renderEvent(){
+  const ev=current();
+  let h=renderEventBar(ev);
+  if(!ev){
+    h+=`<div class="empty"><h2>No snow events yet</h2><p>Start an event when a storm rolls in. Each event tracks NewDeal Deicer Super Sacks used and plow, material, doors and gate status for all five decks.</p>${S.canWrite?'<button class="btn primary" id="btn-new-2" data-action="toggle-new">+ Start first snow event</button>':""}</div>`;
+    return h;
+  }
+  const t=eventTotals(ev);
+  h+=`<div class="summary">
+    <div class="stat"><div class="v">${sk(t.sacks)}<small>sacks</small></div><div class="k">NewDeal Deicer used</div></div>
+    <div class="stat"><div class="v">${fmt(t.sacks*SACK_LBS)}<small>lbs</small></div><div class="k">${(t.sacks*SACK_LBS/2000).toFixed(1)} tons applied</div></div>
+    <div class="stat"><div class="v">${t.done}<small>/ 5</small></div><div class="k">Decks complete</div></div>
+    <div class="stat"><div class="v">${t.open}<small>open</small></div><div class="k">${t.closed} gate${t.closed===1?"":"s"} closed · ${5-t.open-t.closed} not set</div></div>
+  </div>
+  <div class="evmeta"><span><strong>${esc(ev.name)}</strong> · ${esc(niceDate(ev.date))}</span>${ev.snowfall!==""&&ev.snowfall!=null?`<span>Snowfall: <strong>${esc(ev.snowfall)}"</strong></span>`:""}<span class="pill ${ev.status==="closed"?"closed":"prog"}">${ev.status==="closed"?"Event closed":"Event active"}</span></div>`;
+  const lock=locked(ev);
+  const prev=prevEvent(ev);
+  const anyCrew=DECKS.some(k=>deckData(ev,k.id).crew.length)||sidewalkCrew(ev).length;
+  if(!lock&&prev&&!anyCrew&&(DECKS.some(k=>deckData(prev,k.id).crew.length)||sidewalkCrew(prev).length))
+    h+=`<div class="banner" style="background:var(--accent-soft)">No one is assigned yet. <button class="linkbtn" id="btn-copy" data-action="copy-crew">Copy crew assignments from ${esc(prev.name)}</button></div>`;
+  h+=renderSidewalk(ev,lock);
+  h+='<div class="decks">'+DECKS.map(k=>renderDeck(ev,k,lock)).join("")+'</div>';
+  return h;
+}
+function prevEvent(ev){const i=S.events.indexOf(ev);return i>=0?S.events[i+1]||null:null}
+
+function crewBlock(ev,target,lock){
+  const crew=crewOf(ev,target),where=assignments(ev);
+  let h=`<div class="crew"><div class="crew-h"><span class="label">${target==="sidewalk"?"Assigned to sidewalk crew":"Crew assigned"} · ${crew.length}</span></div>`;
+  h+=`<div class="chips">${crew.length?crew.map(n=>`<span class="chip">${esc(n)}${lock?"":`<button class="x" data-action="unassign" data-target="${target}" data-name="${esc(n)}" aria-label="Remove ${esc(n)}">×</button>`}</span>`).join(""):'<span class="none">No one assigned</span>'}</div>`;
+  if(!lock){
+    const avail=S.roster.filter(n=>!crew.includes(n));
+    let opts;
+    if(!S.roster.length) opts='<option value="" selected>No employees yet. Add them in the Crew tab.</option>';
+    else if(!avail.length) opts='<option value="" selected>Everyone on the list is assigned here</option>';
+    else opts='<option value="" selected>+ Select employee…</option>'+avail.map(n=>{const other=(where[n]||[]).map(shortName);return `<option value="${esc(n)}">${esc(n)}${other.length?" (on "+esc(other.join(", "))+")":""}</option>`}).join("");
+    h+=`<select class="as-sel" id="as-${target}" data-target="${target}" aria-label="Assign an employee to ${esc(targetName(target))}"${avail.length?"":" disabled"}>${opts}</select>`;
+    h+=`<form class="addrow writein" data-action="write-in" data-target="${target}"><input type="text" id="wi-${target}" placeholder="Or write in a name" maxlength="40" autocomplete="off" aria-label="Write in an employee for ${esc(targetName(target))}"><button class="btn" type="submit">Add</button></form>`;
+  }
+  return h+'</div>';
+}
+
+function renderSidewalk(ev,lock){
+  let done=0;DECKS.forEach(k=>{const d=deckData(ev,k.id);if(d.lower.doors)done++;if(d.top.doors)done++});
+  const st=done===10?"done":done>0?"prog":"none";
+  let rows='<div class="hd">Deck</div><div class="hd">Lower</div><div class="hd">Top</div>';
+  DECKS.forEach(k=>{const d=deckData(ev,k.id);
+    rows+=`<div class="nm">${esc(k.name)}</div>`;
+    ["lower","top"].forEach(l=>rows+=`<div><button class="mini" role="checkbox" id="sw-${k.id}-${l}" aria-checked="${!!d[l].doors}" aria-label="${esc(k.name)} ${l} level doors and shovel areas" data-action="check" data-deck="${k.id}" data-lvl="${l}" data-key="doors"${lock?" disabled":""}>${CHECK_SVG}</button></div>`);
+  });
+  return `<section class="sidewalk" aria-label="Sidewalk crew">
+    <div class="deck-h"><h2>Sidewalk crew · Doors &amp; shovel areas</h2><span class="pill ${st}">${done}/10 done</span></div>
+    ${crewBlock(ev,"sidewalk",lock)}
+    <div class="sw-grid">${rows}</div>
+  </section>`;
+}
+
+function renderCrewTab(){
+  const ev=current(),where=ev?assignments(ev):{};
+  let h=`<h2 class="sec-h">Crew list</h2><p class="hint">Everyone who can be assigned to a deck or the sidewalk crew.${ev?` Assignments shown are for <strong>${esc(ev.name)}</strong>.`:""}</p>`;
+  if(S.canWrite) h+=`<form class="addrow" data-action="add-person" data-target="" style="max-width:520px"><input type="text" id="add-roster" placeholder="Add a person" maxlength="40" aria-label="New person's name"><button class="btn primary" type="submit">Add</button></form>`;
+  if(!S.roster.length) return h+'<div class="empty"><h2>No crew added yet</h2><p>Add your operators and sidewalk crew here, then pick them from the dropdown on each deck.</p></div>';
+  h+='<div class="roster">'+S.roster.map(n=>{
+    const w=(where[n]||[]).map(t=>targetName(t));
+    return `<div class="roster-row"><span class="who">${esc(n)}<span class="where">${w.length?esc(w.join(", ")):"Not assigned"}</span></span>${S.canWrite?`<button class="btn danger" data-action="remove-person" data-name="${esc(n)}">Remove</button>`:""}</div>`;
+  }).join("")+'</div>';
+  return h;
+}
+
+function checkRow(deckId,lvl,key,label,on,lock){
+  return `<button class="chk" role="checkbox" id="c-${deckId}-${lvl}-${key}" aria-checked="${!!on}" data-action="check" data-deck="${deckId}" data-lvl="${lvl}" data-key="${key}"${lock?" disabled":""}><span class="box">${CHECK_SVG}</span><span class="t">${label}${key==="doors"?' <small class="by">Sidewalk crew</small>':""}</span></button>`;
+}
+function renderDeck(ev,k,lock){
+  const d=deckData(ev,k.id),st=deckStatus(d);
+  const lowN=TASKS.filter(x=>d.lower[x[0]]).length, topN=TASKS.filter(x=>d.top[x[0]]).length+(d.top.gates?1:0);
+  const whole=Math.floor(d.sacks),frac=d.sacks-whole;
+  const tiles=d.sacks>60?`<em>${sk(d.sacks)} sacks</em>`:(Array.from({length:whole},()=>"<span></span>").join("")+(frac?`<span class="part" style="--p:${frac*100}%"></span>`:""))||'<em>No sacks logged yet</em>';
+  const dis=lock?" disabled":"";
+  const who=d.updatedAt?`Updated ${ago(d.updatedAt)}${d.updatedBy?` by <span data-uid="${esc(d.updatedBy)}">${esc(S.names[d.updatedBy]||"…")}</span>`:""}`:"No updates yet";
+  return `<section class="deck${st==="done"?" is-done":""}" aria-label="${esc(k.name)}">
+    <div class="deck-h"><h2>${esc(k.name)}</h2><span class="pill ${st}">${STATUS_LABEL[st]}</span></div>
+    ${crewBlock(ev,k.id,lock)}
+    <div class="sacks" style="margin-top:12px">
+      <div class="sk-top">
+        <div class="lbl"><label class="u" for="s-${k.id}">Super Sacks used</label><div class="lbs">${sk(d.sacks)} × 2,200 = ${fmt(d.sacks*SACK_LBS)} lbs</div></div>
+        <input type="number" class="sk-in" id="s-${k.id}" data-deck="${k.id}" min="0" step="0.25" inputmode="decimal" value="${d.sacks}" aria-label="${esc(k.name)} Super Sacks used, in quarter sacks"${dis}>
+      </div>
+      <div class="sk-btns">
+        <button id="q1-${k.id}" data-action="sack" data-deck="${k.id}" data-d="0.25" aria-label="Add a quarter sack"${dis}>+¼</button>
+        <button id="q2-${k.id}" data-action="sack" data-deck="${k.id}" data-d="0.5" aria-label="Add a half sack"${dis}>+½</button>
+        <button id="q3-${k.id}" data-action="sack" data-deck="${k.id}" data-d="0.75" aria-label="Add three quarters of a sack"${dis}>+¾</button>
+        <button id="q4-${k.id}" data-action="sack" data-deck="${k.id}" data-d="1" aria-label="Add one full sack"${dis}>+1</button>
+      </div>
+      <div class="tiles" aria-hidden="true">${tiles}</div>
+    </div>
+    <div class="levels">
+      <div class="lvl"><h3>Lower levels <span>${lowN}/3</span></h3><div class="checks">
+        ${TASKS.map(x=>checkRow(k.id,"lower",x[0],x[1],d.lower[x[0]],lock)).join("")}
+      </div></div>
+      <div class="lvl"><h3>Top level <span>${topN}/4</span></h3><div class="checks">
+        ${TASKS.map(x=>checkRow(k.id,"top",x[0],x[1],d.top[x[0]],lock)).join("")}
+        <div class="gate"><span class="t">Gates</span><div class="seg" role="group" aria-label="${esc(k.name)} gates">
+          <button class="open" id="g-${k.id}-open" aria-pressed="${d.top.gates==="open"}" data-action="gate" data-deck="${k.id}" data-v="open"${lock?" disabled":""}>Open</button>
+          <button class="closed" id="g-${k.id}-closed" aria-pressed="${d.top.gates==="closed"}" data-action="gate" data-deck="${k.id}" data-v="closed"${lock?" disabled":""}>Closed</button>
+        </div></div>
+      </div></div>
+    </div>
+    <div class="notes"><label class="label" for="n-${k.id}">Notes</label><input type="text" id="n-${k.id}" data-deck="${k.id}" class="note" value="${esc(d.notes)}" placeholder="Ice spots, blocked areas, cars left overnight…"${lock?" disabled":""}></div>
+    <div class="deck-f">${who}</div>
+  </section>`;
+}
+
+function renderSeason(){
+  if(!S.events.length) return `<div class="empty"><h2>No events logged yet</h2><p>Season totals fill in here as snow events are tracked. Every Super Sack is ${fmt(SACK_LBS)} lbs of NewDeal Deicer.</p></div>`;
+  const tot={};DECKS.forEach(k=>tot[k.id]=0);let all=0;
+  const rows=S.events.map(ev=>{
+    const t=eventTotals(ev);all+=t.sacks;
+    const cells=DECKS.map(k=>{const s=deckData(ev,k.id).sacks;tot[k.id]+=s;return`<td>${s?sk(s):"–"}</td>`}).join("");
+    return `<tr data-action="open-event" data-id="${esc(ev.id)}"><td><strong>${esc(ev.name)}</strong><span class="sub">${esc(niceDate(ev.date))}${ev.snowfall!==""&&ev.snowfall!=null?` · ${esc(ev.snowfall)}"`:""}</span></td>${cells}<td><strong>${sk(t.sacks)}</strong></td><td class="mono">${fmt(t.sacks*SACK_LBS)}</td><td>${t.done}/5</td></tr>`;
+  }).join("");
+  return `<div class="summary">
+    <div class="stat"><div class="v">${S.events.length}</div><div class="k">Snow events</div></div>
+    <div class="stat"><div class="v">${sk(all)}<small>sacks</small></div><div class="k">Season total</div></div>
+    <div class="stat"><div class="v">${fmt(all*SACK_LBS)}<small>lbs</small></div><div class="k">${(all*SACK_LBS/2000).toFixed(1)} tons</div></div>
+    <div class="stat"><div class="v">${S.events.length?(all/S.events.length).toFixed(2).replace(/\.?0+$/,""):0}</div><div class="k">Avg sacks per event</div></div>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Event</th>${DECKS.map(k=>`<th>${esc(k.name.replace(" Deck",""))}</th>`).join("")}<th>Sacks</th><th>Lbs</th><th>Done</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td>Season total</td>${DECKS.map(k=>`<td>${sk(tot[k.id])}</td>`).join("")}<td>${sk(all)}</td><td class="mono">${fmt(all*SACK_LBS)}</td><td></td></tr></tfoot>
+  </table></div>`;
+}
+
+async function resolveNames(){
+  if(!user||!user.profiles)return;
+  const ids=[...new Set([...app.querySelectorAll("[data-uid]")].map(e=>e.dataset.uid))].filter(id=>!(id in S.names));
+  if(!ids.length)return;
+  ids.forEach(id=>S.names[id]="");
+  try{const ps=await user.profiles(ids);ids.forEach(id=>{S.names[id]=(ps&&ps[id]&&ps[id].name)||"a teammate"})}catch(e){ids.forEach(id=>S.names[id]="a teammate")}
+  app.querySelectorAll("[data-uid]").forEach(el=>{el.textContent=S.names[el.dataset.uid]||"a teammate"});
+}
+
+/* ---------- actions ---------- */
+app.addEventListener("click",e=>{
+  const b=e.target.closest("[data-action]");if(!b||b.disabled)return;
+  const a=b.dataset.action,ev=current();
+  if(a==="toggle-new"){S.showNew=!S.showNew;render();if(S.showNew){const n=document.getElementById("nf-name");n&&n.select()}return}
+  if(a==="open-event"){S.sel=b.dataset.id;ls("sel",S.sel);S.tab="event";ls("tab","event");render();window.scrollTo(0,0);return}
+  if(a==="remove-person"){if(!S.canWrite)return;const n=b.dataset.name;saveRoster(S.roster.filter(x=>x!==n));toast(n+" removed from the crew list.");return}
+  if(a==="picker"){const t=b.dataset.target;S.picker=S.picker===t?null:t;render();return}
+  if(!ev||locked(ev)&&a!=="close-event"&&a!=="delete-event")return;
+  if(a==="unassign"){const t=b.dataset.target,n=b.dataset.name;setCrew(ev,t,crewOf(ev,t).filter(x=>x!==n));return}
+  if(a==="copy-crew"){const p=prevEvent(ev);if(!p)return;const patch={decks:{},sidewalk:{crew:sidewalkCrew(p).slice(),updatedAt:Date.now(),updatedBy:S.me||null}};DECKS.forEach(k=>{patch.decks[k.id]={crew:deckData(p,k.id).crew.slice()}});write(ev.id,patch);toast("Crew assignments copied. Adjust any deck as needed.");return}
+  const deck=b.dataset.deck;
+  if(a==="check"){const lvl=b.dataset.lvl,key=b.dataset.key,cur=!!deckData(ev,deck)[lvl][key];write(ev.id,deckPatch(deck,{[lvl]:{[key]:!cur}}))}
+  else if(a==="gate"){const cur=deckData(ev,deck).top.gates;const v=b.dataset.v;write(ev.id,deckPatch(deck,{top:{gates:cur===v?null:v}}))}
+  else if(a==="sack"){const n=q(deckData(ev,deck).sacks+Number(b.dataset.d));write(ev.id,deckPatch(deck,{sacks:n}))}
+  else if(a==="close-event"){if(!S.canWrite)return;write(ev.id,{status:ev.status==="closed"?"active":"closed"});toast(ev.status==="closed"?"Event closed. Reopen it to make changes.":"Event reopened.")}
+  else if(a==="delete-event"){if(!S.canWrite)return;
+    if(!S.armDelete){S.armDelete=true;render();clearTimeout(armTimer);armTimer=setTimeout(()=>{S.armDelete=false;render()},4000);return}
+    S.armDelete=false;clearTimeout(armTimer);deleteEvent(ev.id)}
+});
+document.querySelector(".tabs").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(!b)return;S.tab=b.dataset.tab;ls("tab",S.tab);render()});
+app.addEventListener("change",e=>{
+  const t=e.target;
+  if(t.id==="evsel"){S.sel=t.value;ls("sel",S.sel);S.armDelete=false;render();return}
+  if(t.classList.contains("as-sel")){const ev=current();if(!ev||locked(ev)||!t.value)return;const tg=t.dataset.target,cur=crewOf(ev,tg);if(!cur.includes(t.value))setCrew(ev,tg,cur.concat(t.value));return}
+  if(t.classList.contains("sk-in")){const ev=current();if(!ev||locked(ev))return;
+    const raw=parseFloat(t.value),cur=deckData(ev,t.dataset.deck).sacks;
+    if(!isFinite(raw)||raw<0){t.value=cur;toast("Enter sacks as a number, like 2.75.");return}
+    const n=q(raw);if(n!==raw)toast("Rounded to "+sk(n)+" sacks (quarter-sack steps).");
+    t.value=n;if(n!==cur)write(ev.id,deckPatch(t.dataset.deck,{sacks:n}));return}
+  if(t.classList.contains("note")){const ev=current();if(!ev||locked(ev))return;if((deckData(ev,t.dataset.deck).notes||"")===t.value)return;write(ev.id,deckPatch(t.dataset.deck,{notes:t.value.slice(0,500)}))}
+});
+function saveRoster(arr){
+  S.roster=arr;render();
+  if(S.mode!=="live")return;
+  rosterChain=rosterChain.then(()=>db.doc("config/roster").set({people:arr})).catch(fail);
+}
+function setCrew(ev,target,arr){
+  if(target==="sidewalk")write(ev.id,{sidewalk:{crew:arr,updatedAt:Date.now(),updatedBy:S.me||null}});
+  else write(ev.id,deckPatch(target,{crew:arr}));
+}
+app.addEventListener("submit",async e=>{
+  e.preventDefault();
+  const f=e.target;
+  if(f.dataset.action==="write-in"){
+    const ev=current();if(!ev||locked(ev))return;
+    const inp=f.querySelector("input"),raw=inp.value.trim().replace(/\s+/g," ").slice(0,40);
+    if(!raw)return;
+    const name=S.roster.find(x=>x.toLowerCase()===raw.toLowerCase())||raw;
+    const t=f.dataset.target,cur=crewOf(ev,t);
+    inp.value="";
+    if(cur.some(x=>x.toLowerCase()===name.toLowerCase())){toast(name+" is already assigned here.");return}
+    setCrew(ev,t,cur.concat(name));
+    return;
+  }
+  if(f.dataset.action==="add-person"){
+    if(!S.canWrite)return;
+    const inp=f.querySelector("input"),name=inp.value.trim().replace(/\s+/g," ").slice(0,40);
+    if(!name)return;
+    const existing=S.roster.find(x=>x.toLowerCase()===name.toLowerCase());
+    const finalName=existing||name;
+    inp.value="";
+    if(!existing)saveRoster(S.roster.concat(finalName).sort((a,b)=>a.localeCompare(b)));
+    const t=f.dataset.target,ev=current();
+    if(t&&ev&&!locked(ev)){const cur=crewOf(ev,t);if(!cur.includes(finalName))setCrew(ev,t,cur.concat(finalName))}
+    else if(existing)toast(finalName+" is already on the crew list.");
+    return;
+  }
+  if(f.id!=="newform")return;
+  const name=document.getElementById("nf-name").value.trim()||"Snow event";
+  const date=document.getElementById("nf-date").value||today();
+  const snow=document.getElementById("nf-snow").value;
+  const body={name:name.slice(0,80),date,snowfall:snow===""?"":Number(snow),status:"active",createdAt:Date.now(),createdBy:S.me||null,decks:{}};
+  if(S.mode==="live"){
+    const btn=document.getElementById("nf-go");btn.disabled=true;
+    try{const ref=db.collection("events").doc();await ref.set(body);if(!S.events.some(e=>e.id===ref.id))S.events.unshift(Object.assign({id:ref.id},body));S.sel=ref.id;ls("sel",ref.id);S.showNew=false;render();toast("Event started. Crews can start checking off decks.")}
+    catch(err){btn.disabled=false;fail(err)}
+  }else{const id="local-"+Date.now();S.events.unshift(Object.assign({id},body));S.sel=id;S.showNew=false;render()}
+});
+async function deleteEvent(id){
+  S.events=S.events.filter(e=>e.id!==id);S.sel=S.events[0]?S.events[0].id:null;render();
+  if(S.mode==="live"){try{await db.doc("events/"+id).delete();toast("Event deleted.")}catch(e){fail(e)}}
+}
+
+/* ---------- data ---------- */
+function onEvents(snap){
+  S.events=snap.docs.map(d=>Object.assign({id:d.id},JSON.parse(JSON.stringify(d.data()||{}))));
+  S.events.sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||0)-(a.createdAt||0));
+  if(!S.events.some(e=>e.id===S.sel)){const saved=ls("sel");S.sel=S.events.some(e=>e.id===saved)?saved:(S.events[0]?S.events[0].id:null)}
+  if(isTyping()){setLive();return} /* don't clobber typing */
+  render();
+}
+function goLocal(){
+  if(S.mode==="live")return;
+  S.mode="local";
+  S.events=[{id:"local-sample",name:"Sample event",date:today(),snowfall:3,status:"active",createdAt:Date.now(),decks:{
+    "north-cole":{sacks:2.75,lower:{plowed:true,applied:true,doors:true},top:{plowed:true,applied:true,doors:true,gates:"open"}},
+    "south-cole":{sacks:2,lower:{plowed:true,applied:true},top:{plowed:true}},
+    "design":{sacks:0.5,lower:{plowed:true}}}}];
+  S.roster=["Example operator 1","Example operator 2","Example shoveler 1","Example shoveler 2"];
+  S.events[0].decks["north-cole"].crew=["Example operator 1"];
+  S.events[0].sidewalk={crew:["Example shoveler 1","Example shoveler 2"]};
+  S.sel="local-sample";render();
+}
+
+(async function init(){
+  if(!window.claude||!window.claude.use){goLocal();return}
+  const fallback=setTimeout(goLocal,12000);
+  try{
+    const [d,u]=await Promise.all([claude.use("db"),claude.use("user")]);
+    clearTimeout(fallback);
+    user=u;
+    if(!d){goLocal();return}
+    db=d;
+    if(u){
+      try{S.me=await u.id()}catch(e){}
+      try{const c=await u.can("data.write");if(c===false)S.canWrite=false}catch(e){}
+    }
+    S.mode="live";render();
+    db.doc("config/roster").onSnapshot(s=>{
+      const p=s.exists&&s.data()&&s.data().people;
+      S.roster=Array.isArray(p)?p.slice():[];
+      if(!isTyping())render();
+    },()=>{});
+    db.collection("events").limit(500).onSnapshot(onEvents,err=>{
+      if(err&&err.code==="revoked"){S.canWrite=false;render();return}
+      toast("Live updates paused. Reload the page to reconnect.");
+    });
+  }catch(e){clearTimeout(fallback);goLocal()}
+})();
+setInterval(()=>{if(S.tab==="event"&&S.mode!=="loading"&&!isTyping())render()},60000);
+})();
+</script>
+
+</body>
+</html>
