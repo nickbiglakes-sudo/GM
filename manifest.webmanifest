@@ -1,0 +1,17 @@
+{
+  "name": "GM Tech Snow Tracker",
+  "short_name": "Snow Tracker",
+  "description": "Super Sack usage, deck completion, gates and crew for the GM Tech Center parking decks.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#edf1f5",
+  "theme_color": "#1c5bc9",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
